@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>简化版植物大战僵尸</title>
+<style>
+  body{margin:0;background:#1a2f1a;display:flex;flex-direction:column;align-items:center;font-family:sans-serif;color:#fff;user-select:none}
+  h2{margin:8px 0 4px}
+  #hud{display:flex;gap:24px;margin-bottom:6px;align-items:center;font-size:18px}
+  #bar{display:flex;gap:6px;background:#3a5a2a;padding:6px;border-radius:8px}
+  .slot{width:64px;height:74px;background:#5a7a3a;border:2px solid #2a3a1a;border-radius:8px;text-align:center;cursor:pointer;font-size:12px}
+  .slot.sel{border-color:#ffdd55;background:#7a9a4a}
+  .slot .icon{font-size:28px;line-height:34px}
+  .slot .cost{color:#ffdd55}
+  #msg{height:24px;font-size:18px;font-weight:bold;color:#ffdd55;margin:4px 0}
+  canvas{background:#7ec850;border:4px solid #3a5a2a;border-radius:6px;cursor:pointer}
+</style>
+</head>
+<body>
+<h2>🌱 植物大战僵尸 · 简化版 🧟</h2>
+<div id="hud">
+  <span>☀️ <span id="sun">50</span></div>
+  <div id="bar"></div>
+  <span>波数 <span id="wave">1</span>/5</span>
+  <span>分数 <span id="score">0</span></span>
+</div>
+<div id="msg">点击植物卡片，再点击草地种植！</div>
+<canvas id="cv" width="900" height="500"></canvas>
+<script>
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const COLS=9,ROWS=5,X0=60,Y0=20,CW=90,CH=96;
+const PLANTS={
+ sunflower:{name:'向日葵',cost:50,icon:'🌻',hp:120,cd:0,desc:'产阳光'},
+ peashooter:{name:'豌豆射手',cost:100,icon:'🌱',hp:120,cd:0,desc:'射击'},
+ snowpea:{name:'寒冰射手',cost:175,icon:'❄️',hp:120,cd:0,desc:'减速'},
+ wallnut:{name:'坚果墙',cost:50,icon:'🥜',hp:800,cd:0,desc:'肉盾'},
+ cherry:{name:'樱桃炸弹',cost:150,icon:'🍒',hp:9999,cd:0,desc:'爆炸'},
+ potato:{name:'土豆雷',cost:25,icon:'🥔',hp:80,cd:0,arm:10,desc:'埋伏爆炸'}
+};
+let sun=50,score=0,wave=1,plants=[],zombies=[],bullets=[],suns=[],parts=[];
+let sel=null,shovel=false,over=false,started=false,waveTimer=0,zSpawned=0,zKilled=0,zNeeded=6;
+function killAt(cond){ // 爆炸击杀也要计入击杀数,否则波数无法推进
+ let n=0;zombies=zombies.filter(z=>{if(cond(z)){n++;return false;}return true;});
+ zKilled+=n;score+=20*n;
+}
+const bar=document.getElementById('bar');
+for(const k in PLANTS){const d=document.createElement('div');d.className='slot';d.dataset.k=k;
+ d.innerHTML=`<div class="icon">${PLANTS[k].icon}</div>${PLANTS[k].name}<br><span class="cost">☀${PLANTS[k].cost}</span>`;
+ d.onclick=()=>{document.querySelectorAll('.slot').forEach(s=>s.classList.remove('sel'));d.classList.add('sel');sel=k;};
+ bar.appendChild(d);}
+const sh=document.createElement('div');sh.className='slot';sh.id='shovelSlot';
+sh.innerHTML='<div class="icon">🪏</div>铲子<br><span class="cost">免费</span>';
+sh.onclick=()=>{document.querySelectorAll('.slot').forEach(s=>s.classList.remove('sel'));shovel=!shovel;sh.classList.toggle('sel',shovel);if(shovel)sel=null;};
+bar.appendChild(sh);
+const msg=document.getElementById('msg');
+function say(t){msg.textContent=t;}
+function cell(mx,my){const c=Math.floor((mx-X0)/CW),r=Math.floor((my-Y0)/CH);return(c>=0&&c<COLS&&r>=0&&r<ROWS)?{c,r}:null;}
+cv.onclick=e=>{const b=cv.getBoundingClientRect(),mx=(e.clientX-b.left)*cv.width/b.width,my=(e.clientY-b.top)*cv.height/b.height;
+ if(over||!started)return;
+ // 收集阳光
+ for(let i=suns.length-1;i>=0;i--){const s=suns[i];if(Math.hypot(s.x-mx,s.y-my)<30){sun+=25;score+=5;suns.splice(i,1);return;}}
+ const cellPos=cell(mx,my);if(!cellPos)return;
+ if(shovel){ // 铲除植物
+  const idx=plants.findIndex(q=>q.c===cellPos.c&&q.r===cellPos.r);
+  if(idx>=0){plants.splice(idx,1);say('铲除了植物');}else say('这里没有植物');
+  shovel=false;sh.classList.remove('sel');
+  return;
+ }
+ if(!sel)return;
+ const p=PLANTS[sel];
+ if(sun<p.cost){say('阳光不足!');return;}
+ if(plants.some(q=>q.c===cellPos.c&&q.r===cellPos.r)){say('这里已经有植物了!');return;}
+ sun-=p.cost;
+ plants.push({type:sel,...cellPos,hp:p.hp,maxHp:p.hp,timer:0});
+ say(`种下了 ${p.name}!`);
+};
+function spawnZombie(){
+ const r=Math.floor(Math.random()*ROWS);
+ const hp=100+wave*40;
+ zombies.push({x:cv.width+20,r,hp,maxHp:hp,speed:12+Math.random()*8+wave*3,slow:0,eating:0});
+ zSpawned++;
+}
+function boom(x,y){for(let i=0;i<30;i++)parts.push({x,y,vx:(Math.random()-.5)*8,vy:(Math.random()-.5)*8-2,life:30,c:Math.random()<.5?'#f55':'#fa0'});}
+function update(dt){
+ if(over||!started)return;
+ waveTimer-=dt;
+ if(waveTimer<=0&&zSpawned<zNeeded){spawnZombie();waveTimer=Math.max(4,10-wave*0.8);}
+ // 阳光掉落
+ if(Math.random()<dt*0.15)suns.push({x:X0+Math.random()*COLS*CW,y:-20,vy:40,t:0});
+ for(let i=suns.length-1;i>=0;i--){const s=suns[i];s.t+=dt;
+  if(s.y<Y0+Math.random()*ROWS*CH)s.y+=s.vy*dt;
+  if(s.t>2.5){sun+=25;score+=5;suns.splice(i,1);}} // 落地后自动收集
+ // 植物
+ for(let i=plants.length-1;i>=0;i--){const p=plants[i],d=PLANTS[p.type],px=X0+p.c*CW+CW/2,py=Y0+p.r*CH+CH/2;
+  p.timer+=dt;
+  if(p.type==='sunflower'&&p.timer>7){p.timer=0;suns.push({x:px-20+Math.random()*40,y:py,vy:0,t:0});}
+  if(p.type==='peashooter'||p.type==='snowpea'){
+   const target=zombies.some(z=>z.r===p.r&&z.x>px&&z.x<cv.width);
+   if(target&&p.timer>1.4){p.timer=0;bullets.push({x:px+30,y:py-8,r:p.r,dmg:20,snow:p.type==='snowpea'});}
+  }
+  if(p.type==='potato'){
+   const armed=p.timer>(PLANTS.potato.arm);
+   const z=zombies.find(z=>z.r===p.r&&Math.abs(z.x-px)<35);
+   if(armed&&z){boom(px,py);score+=15;
+    killAt(q=>q.r===p.r&&Math.abs(q.x-px)<45);
+    plants.splice(i,1);continue;}
+  }
+  if(p.type==='cherry'&&p.timer>0.8){
+   boom(px,py);score+=10;
+   killAt(z=>Math.abs(z.r-p.r)<=1&&Math.abs(z.x-px)<CW*1.5);
+   plants.splice(i,1);continue;
+  }
+  if(p.hp<=0){plants.splice(i,1);}
+ }
+ // 子弹
+ for(let i=bullets.length-1;i>=0;i--){const b=bullets[i];b.x+=280*dt;
+  const hit=zombies.find(z=>z.r===b.r&&Math.abs(z.x-b.x)<25);
+  if(hit){hit.hp-=b.dmg;if(b.snow)hit.slow=3;bullets.splice(i,1);continue;}
+  if(b.x>cv.width)bullets.splice(i,1);
+ }
+ // 僵尸
+ for(let i=zombies.length-1;i>=0;i--){const z=zombies[i];
+  if(z.slow>0)z.slow-=dt;
+  const eat=plants.find(p=>p.r===z.r&&Math.abs((X0+p.c*CW+CW/2)-z.x)<35);
+  if(eat){z.eating+=dt;if(z.eating>0.5){z.eating=0;eat.hp-=15;}}
+  else z.x-=z.speed*(z.slow>0?0.4:1)*dt;
+  if(z.hp<=0){zombies.splice(i,1);zKilled++;score+=20;continue;}
+  if(z.x<X0-30){over=true;say('🧟 僵尸吃掉了你的脑子!游戏结束');}
+ }
+ if(!over&&started&&zKilled>=zNeeded){
+  if(wave<5){wave++;zNeeded+=4;zSpawned=0;zKilled=0;say(`第 ${wave} 波来袭!`);}
+  else{over=true;say('🎉 你守住了所有波数,胜利!');}
+ }
+ parts.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.3;p.life--;});
+ parts=parts.filter(p=>p.life>0);
+}
+function draw(){
+ ctx.clearRect(0,0,cv.width,cv.height);
+ // 草地棋盘
+ for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+  ctx.fillStyle=(r+c)%2?'#8fd05e':'#7ec850';
+  ctx.fillRect(X0+c*CW,Y0+r*CH,CW,CH);
+ }
+ ctx.font='36px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+ // 植物
+ plants.forEach(p=>{const x=X0+p.c*CW+CW/2,y=Y0+p.r*CH+CH/2;
+  if(p.type==='potato'&&p.timer<=PLANTS.potato.arm){
+   ctx.save();ctx.globalAlpha=0.45;ctx.font='28px serif';ctx.fillText('🥔',x,y+10);ctx.restore();
+   ctx.fillStyle='#fff8';ctx.font='10px sans-serif';ctx.fillText(`上膛 ${Math.ceil(PLANTS.potato.arm-p.timer)}s`,x,y-26);
+  }else{
+   ctx.font=p.type==='potato'?'48px serif':'44px serif';
+   ctx.fillText(PLANTS[p.type].icon,x,y-6);
+   if(p.type==='potato'){ctx.fillStyle='#f33';ctx.beginPath();ctx.arc(x+16,y-26,4,0,7);ctx.fill();}
+  }
+  if(p.hp<p.maxHp&&p.type!=='cherry'){ctx.fillStyle='#000a';ctx.fillRect(x-30,y+28,60,6);
+   ctx.fillStyle='#3f3';ctx.fillRect(x-30,y+28,60*p.hp/p.maxHp,6);}
+ });
+ // 僵尸
+ zombies.forEach(z=>{const y=Y0+z.r*CH+CH/2;
+  ctx.save();if(z.slow>0)ctx.filter='hue-rotate(160deg)';
+  ctx.font='42px serif';ctx.fillText('🧟',z.x,y-6);ctx.restore();
+  ctx.fillStyle='#000a';ctx.fillRect(z.x-25,y+28,50,6);
+  ctx.fillStyle='#f33';ctx.fillRect(z.x-25,y+28,50*z.hp/z.maxHp,6);
+ });
+ // 子弹
+ bullets.forEach(b=>{ctx.font='20px serif';ctx.fillText(b.snow?'🧊':'🟢',b.x,b.y);});
+ // 阳光
+ suns.forEach(s=>{ctx.font='34px serif';ctx.fillText('☀️',s.x,s.y);});
+ // 粒子
+ parts.forEach(p=>{ctx.fillStyle=p.c;ctx.fillRect(p.x,p.y,5,5);});
+ // 开始遮罩
+ if(!started){ctx.fillStyle='#000a';ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle='#fff';ctx.font='30px sans-serif';ctx.fillText('点击开始游戏',cv.width/2,cv.height/2);
+  ctx.font='16px sans-serif';ctx.fillText('种向日葵攒阳光,用豌豆射手防守,共5波僵尸',cv.width/2,cv.height/2+40);}
+ document.getElementById('sun').textContent=sun;
+ document.getElementById('wave').textContent=wave;
+ document.getElementById('score').textContent=score;
+}
+cv.addEventListener('click',()=>{if(!started){started=true;say('游戏开始!');}},{once:false});
+let last=performance.now();
+function loop(t){const dt=Math.min(0.05,(t-last)/1000);last=t;update(dt);draw();requestAnimationFrame(loop);}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
